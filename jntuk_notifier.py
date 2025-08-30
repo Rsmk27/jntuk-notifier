@@ -1,121 +1,76 @@
-#!/usr/bin/env python3
-"""
-jntuk_notifier.py
-Checks jntukresults.edu.in top table row for new BTECH entry and sends Telegram message.
-Run once (for GitHub Actions): python jntuk_notifier.py --once
-"""
-
 import os
-import time
-import argparse
 import requests
 from bs4 import BeautifulSoup
 
-# CONFIG (via env vars)
-URL = os.getenv("JNTUK_URL", "https://jntukresults.edu.in/")
-LAST_FILE = os.getenv("LAST_FILE", "last_result.txt")
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", "1800"))  # 30 minutes
+# Telegram credentials from secrets
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; JNTUK-Result-Notifier/1.0)"
-}
+# JNTUK results site
+URL = "https://jntukresults.edu.in/"
 
-def send_telegram_message(text):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("ERROR: BOT_TOKEN or CHAT_ID not set.")
-        return False
-    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
+def send_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": text}
     try:
-        r = requests.post(api_url, data=payload, timeout=15)
-        r.raise_for_status()
-        print("Telegram message sent.")
-        return True
+        requests.post(url, data=data)
     except Exception as e:
-        print("Failed to send Telegram message:", e)
-        return False
+        print(f"Failed to send message: {e}")
 
-def fetch_first_row():
+def check_results():
     try:
-        print(f"Fetching: {URL}")
-        r = requests.get(URL, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        table = soup.select_one("table")
-        if not table:
-            print("No table element found on page.")
-            return None, None, None
-        tbody = table.find("tbody") or table
-        first_tr = tbody.find("tr")
-        if not first_tr:
-            print("No rows found inside the results table.")
-            return None, None, None
-        cols = first_tr.find_all(["td", "th"])
-        publish_date = cols[1].get_text(strip=True) if len(cols) > 1 else ""
-        course = cols[2].get_text(strip=True) if len(cols) > 2 else ""
-        details = cols[5].get_text(strip=True) if len(cols) > 5 else " ".join([c.get_text(strip=True) for c in cols[2:]])
-        print("Extracted top row:", publish_date, "|", course, "|", (details[:80] + "..") if len(details)>80 else details)
-        return publish_date, course, details
+        resp = requests.get(URL, timeout=10)
+        resp.raise_for_status()
     except Exception as e:
-        print("Error fetching/parsing site:", e)
-        return None, None, None
-
-def load_last():
-    try:
-        with open(LAST_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return ""
-
-def save_last(value):
-    with open(LAST_FILE, "w", encoding="utf-8") as f:
-        f.write(value)
-
-def check_and_notify():
-    publish_date, course, details = fetch_first_row()
-    if not any([publish_date, course, details]):
-        print("Skipping: could not get valid row data.")
+        send_message(f"❌ Failed to fetch JNTUK site: {e}")
         return
-    key = f"{publish_date}||{course}||{details}"
-    last = load_last()
-    if key != last and "BTECH" in course.upper():
-        message = (
-            "🔔 <b>New B.Tech Result Published</b>\n\n"
-            f"📅 <b>Publish Date:</b> {publish_date}\n"
-            f"📘 <b>Details:</b> {details}\n\n"
-            f"🔗 <a href='{URL}'>Open results page</a>"
-        )
-        print("New B.Tech result detected. Sending Telegram message...")
-        ok = send_telegram_message(message)
-        if ok:
-            save_last(key)
-            print("Saved new latest result.")
-        else:
-            print("Failed to notify; will retry next run.")
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Find the first table
+    table = soup.find("table")
+    if not table:
+        send_message("❌ Could not find results table on JNTUK site.")
+        return
+
+    # Get all rows
+    rows = table.find_all("tr")
+
+    # Skip header if needed
+    first_row = None
+    for row in rows:
+        cols = row.find_all("td")
+        if cols and row.find("a"):  # ensure it has a link
+            first_row = row
+            break
+
+    if not first_row:
+        send_message("❌ Could not extract the first result row.")
+        return
+
+    # Extract text + link
+    title = first_row.get_text(strip=True)
+    link = first_row.find("a")["href"]
+
+    # Make full URL if relative
+    if not link.startswith("http"):
+        link = URL.rstrip("/") + "/" + link.lstrip("/")
+
+    # Store last seen result
+    state_file = "last_result.txt"
+    last_result = None
+    if os.path.exists(state_file):
+        with open(state_file, "r") as f:
+            last_result = f.read().strip()
+
+    # Compare and notify
+    if title != last_result:
+        message = f"📢 New JNTUK Result Released:\n\n{title}\n🔗 {link}"
+        send_message(message)
+        with open(state_file, "w") as f:
+            f.write(title)
     else:
-        print("No new B.Tech result detected (or top row is not BTECH).")
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true", help="Run once and exit (use in GitHub Actions)")
-    parser.add_argument("--interval", type=int, default=CHECK_INTERVAL, help="Polling interval in seconds")
-    args = parser.parse_args()
-
-    if args.once:
-        check_and_notify()
-        return
-
-    print(f"Starting daemon with interval {args.interval}s. Press Ctrl+C to stop.")
-    while True:
-        check_and_notify()
-        time.sleep(args.interval)
+        print("No new result found.")
 
 if __name__ == "__main__":
-    main()
+    check_results()
