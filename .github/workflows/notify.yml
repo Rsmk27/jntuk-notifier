@@ -2,8 +2,8 @@ name: JNTUK Result Notifier
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # Runs every 30 minutes
-  workflow_dispatch:         # Allows manual run from Actions tab
+    - cron: "*/30 * * * *"   # runs every 30 mins
+  workflow_dispatch:
 
 jobs:
   check:
@@ -15,13 +15,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.x"
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run notifier
         run: python notifier.py
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
